@@ -26,16 +26,21 @@ router.get(
         { userId: req.user.id, date }
       ),
       query(
-        `SELECT ms.meal_type AS mealType, ms.scheduled_time AS scheduledTime,
-                ms.reminder_enabled AS reminderEnabled,
-                COUNT(fl.id) AS loggedItems,
-                COALESCE(SUM(fl.calories), 0) AS calories
-         FROM meal_schedules ms
-         LEFT JOIN food_logs fl
-           ON fl.user_id = ms.user_id AND fl.meal_type = ms.meal_type AND fl.log_date = :date
-         WHERE ms.user_id = :userId AND ms.is_active = TRUE
-         GROUP BY ms.id
-         ORDER BY ms.scheduled_time`,
+        `SELECT
+           mp.id,
+           mp.meal_type AS mealType,
+           mp.planned_time AS scheduledTime,
+           TRUE AS reminderEnabled,
+           CASE WHEN mp.is_completed THEN 1 ELSE 0 END AS loggedItems,
+           COALESCE(mp.target_calories, fd.calories * mp.serving_amount, 0) AS calories,
+           mp.food_name AS foodName,
+           mp.is_completed AS isCompleted
+         FROM meal_plans mp
+         LEFT JOIN food_database fd ON fd.id = mp.food_id
+         WHERE mp.user_id = :userId AND mp.plan_date = :date
+         ORDER BY mp.planned_time,
+           FIELD(mp.meal_type, 'breakfast', 'morning_snack', 'lunch', 'afternoon_snack', 'dinner', 'late_snack'),
+           mp.created_at`,
         { userId: req.user.id, date }
       ),
       query(

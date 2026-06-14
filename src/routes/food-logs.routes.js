@@ -10,6 +10,7 @@ const router = express.Router();
 
 const foodLogSchema = z.object({
   foodId: z.string().uuid().optional(),
+  mealPlanId: z.string().uuid().optional(),
   foodName: z.string().min(1).max(200).optional(),
   mealType: z.enum(["breakfast", "morning_snack", "lunch", "afternoon_snack", "dinner", "late_snack"]),
   logDate: z.string().optional(),
@@ -163,8 +164,8 @@ router.post(
       await connection.execute(
         `INSERT INTO food_logs
          (id, user_id, food_id, food_name, meal_type, log_date, serving_amount, serving_unit, serving_size_g,
-          calories, protein_g, carbohydrates_g, fat_g, fiber_g, sugar_g, sodium_mg, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          calories, protein_g, carbohydrates_g, fat_g, fiber_g, sugar_g, sodium_mg, notes, meal_plan_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           req.user.id,
@@ -182,9 +183,16 @@ router.post(
           nutrition.fiberG,
           nutrition.sugarG,
           nutrition.sodiumMg,
-          payload.notes || null
+          payload.notes || null,
+          payload.mealPlanId || null
         ]
       );
+      if (payload.mealPlanId) {
+        await connection.execute(
+          "UPDATE meal_plans SET is_completed = TRUE, completed_at = COALESCE(completed_at, NOW()) WHERE id = ? AND user_id = ?",
+          [payload.mealPlanId, req.user.id]
+        );
+      }
       await refreshDailySummary(connection, req.user.id, date);
     });
 
@@ -286,7 +294,7 @@ router.delete(
   "/:id",
   authenticate,
   asyncHandler(async (req, res) => {
-    const rows = await query("SELECT log_date FROM food_logs WHERE id = :id AND user_id = :userId", {
+    const rows = await query("SELECT log_date, meal_plan_id FROM food_logs WHERE id = :id AND user_id = :userId", {
       id: req.params.id,
       userId: req.user.id
     });
@@ -297,6 +305,12 @@ router.delete(
 
     await transaction(async (connection) => {
       await connection.execute("DELETE FROM food_logs WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+      if (rows[0].meal_plan_id) {
+        await connection.execute(
+          "UPDATE meal_plans SET is_completed = FALSE, completed_at = NULL WHERE id = ? AND user_id = ?",
+          [rows[0].meal_plan_id, req.user.id]
+        );
+      }
       await refreshDailySummary(connection, req.user.id, rows[0].log_date);
     });
 
