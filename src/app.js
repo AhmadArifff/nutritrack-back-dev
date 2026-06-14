@@ -12,7 +12,7 @@ const app = express();
 app.use(helmet());
 app.use(compression());
 app.use(cors({ origin: env.appUrl, credentials: true }));
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "8mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan(env.nodeEnv === "production" ? "combined" : "dev"));
 
