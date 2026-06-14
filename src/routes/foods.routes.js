@@ -49,7 +49,7 @@ router.get(
   asyncHandler(async (req, res) => {
     const search = String(req.query.search || "").trim();
     const category = String(req.query.category || "").trim();
-    const limit = Math.min(Number(req.query.limit || 30), 100);
+    const limit = Math.min(Number(req.query.limit || 30), 500);
 
     const params = { userId: req.user.id, limit };
     const filters = ["(is_public = TRUE OR created_by = :userId)"];
