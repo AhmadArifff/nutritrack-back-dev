@@ -12,6 +12,7 @@ const mealPlanSchema = z.object({
   planName: z.string().max(100).optional(),
   planDate: z.string(),
   mealType: z.enum(["breakfast", "morning_snack", "lunch", "afternoon_snack", "dinner", "late_snack"]),
+  plannedTime: z.string().regex(/^\d{2}:\d{2}(:\d{2})?$/).optional().nullable(),
   foodId: z.string().uuid().optional(),
   foodName: z.string().min(1).max(200),
   servingAmount: z.coerce.number().positive().default(1),
@@ -31,11 +32,18 @@ router.get(
     const to = String(req.query.to || from);
 
     const rows = await query(
-      `SELECT *
-       FROM meal_plans
-       WHERE user_id = :userId AND plan_date BETWEEN :from AND :to
+      `SELECT
+         mp.*,
+         COALESCE(mp.target_calories, fd.calories * mp.serving_amount) AS target_calories,
+         COALESCE(mp.target_protein_g, fd.protein_g * mp.serving_amount, 0) AS target_protein_g,
+         COALESCE(mp.target_carbs_g, fd.carbohydrates_g * mp.serving_amount, 0) AS target_carbs_g,
+         COALESCE(mp.target_fat_g, fd.fat_g * mp.serving_amount, 0) AS target_fat_g
+       FROM meal_plans mp
+       LEFT JOIN food_database fd ON fd.id = mp.food_id
+       WHERE mp.user_id = :userId AND mp.plan_date BETWEEN :from AND :to
        ORDER BY plan_date,
          FIELD(meal_type, 'breakfast', 'morning_snack', 'lunch', 'afternoon_snack', 'dinner', 'late_snack'),
+         planned_time,
          created_at`,
       { userId: req.user.id, from, to }
     );
@@ -89,10 +97,10 @@ router.post(
 
     await query(
       `INSERT INTO meal_plans
-       (id, user_id, plan_name, plan_date, meal_type, food_id, food_name, serving_amount, serving_unit,
+       (id, user_id, plan_name, plan_date, meal_type, planned_time, food_id, food_name, serving_amount, serving_unit,
         target_calories, target_protein_g, target_carbs_g, target_fat_g, notes)
        VALUES
-       (:id, :userId, :planName, :planDate, :mealType, :foodId, :foodName, :servingAmount, :servingUnit,
+       (:id, :userId, :planName, :planDate, :mealType, :plannedTime, :foodId, :foodName, :servingAmount, :servingUnit,
         :targetCalories, :targetProteinG, :targetCarbsG, :targetFatG, :notes)`,
       {
         id,
@@ -100,6 +108,7 @@ router.post(
         planName: payload.planName || null,
         planDate: payload.planDate,
         mealType: payload.mealType,
+        plannedTime: payload.plannedTime || null,
         foodId: payload.foodId || null,
         foodName: payload.foodName,
         servingAmount: payload.servingAmount,
@@ -141,6 +150,7 @@ router.put(
         plan_name = COALESCE(:planName, plan_name),
         plan_date = COALESCE(:planDate, plan_date),
         meal_type = COALESCE(:mealType, meal_type),
+        planned_time = COALESCE(:plannedTime, planned_time),
         food_id = COALESCE(:foodId, food_id),
         food_name = COALESCE(:foodName, food_name),
         serving_amount = COALESCE(:servingAmount, serving_amount),
@@ -157,6 +167,7 @@ router.put(
         planName: payload.planName ?? null,
         planDate: payload.planDate ?? null,
         mealType: payload.mealType ?? null,
+        plannedTime: payload.plannedTime ?? null,
         foodId: payload.foodId ?? null,
         foodName: payload.foodName ?? null,
         servingAmount: payload.servingAmount ?? null,

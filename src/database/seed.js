@@ -325,25 +325,45 @@ async function main() {
     }
 
     const mealPlans = [
-      [isoDate(0), "breakfast", "Greek Yogurt", 1, 100],
-      [isoDate(0), "lunch", "Nasi Merah", 1, 165],
-      [isoDate(0), "dinner", "Daging Sapi Rendang", 1, 295],
-      [isoDate(1), "breakfast", "Roti Gandum", 2, 140],
-      [isoDate(1), "lunch", "Pecel", 1, 280],
-      [isoDate(1), "dinner", "Ikan Tuna Kaleng", 1, 100]
+      [isoDate(0), "breakfast", "07:30:00", "Greek Yogurt", 1, 100],
+      [isoDate(0), "lunch", "12:30:00", "Nasi Merah", 1, 165],
+      [isoDate(0), "dinner", "19:00:00", "Daging Sapi Rendang", 1, 295],
+      [isoDate(1), "breakfast", "07:30:00", "Roti Gandum", 2, 140],
+      [isoDate(1), "lunch", "12:30:00", "Pecel", 1, 280],
+      [isoDate(1), "dinner", "19:00:00", "Ikan Tuna Kaleng", 1, 100]
     ];
 
-    for (const [date, mealType, foodName, amount, calories] of mealPlans) {
+    for (const [date, mealType, plannedTime, foodName, amount, calories] of mealPlans) {
       await insertIfMissing(
         connection,
         "meal_plans",
         { user_id: demoUserId, food_name: foodName, plan_date: date, meal_type: mealType },
         `INSERT INTO meal_plans
-         (id, user_id, plan_name, plan_date, meal_type, food_id, food_name, serving_amount, serving_unit, target_calories)
-         VALUES (?, ?, 'Weekly Plan', ?, ?, ?, ?, ?, 'porsi', ?)`,
-        [randomUUID(), demoUserId, date, mealType, foodIdByName[foodName], foodName, amount, calories]
+         (id, user_id, plan_name, plan_date, meal_type, planned_time, food_id, food_name, serving_amount, serving_unit, target_calories)
+         VALUES (?, ?, 'Weekly Plan', ?, ?, ?, ?, ?, ?, 'porsi', ?)
+         ON DUPLICATE KEY UPDATE planned_time = VALUES(planned_time)`,
+        [randomUUID(), demoUserId, date, mealType, plannedTime, foodIdByName[foodName], foodName, amount, calories]
+      );
+      await connection.execute(
+        "UPDATE meal_plans SET planned_time = ? WHERE user_id = ? AND food_name = ? AND plan_date = ? AND meal_type = ?",
+        [plannedTime, demoUserId, foodName, date, mealType]
       );
     }
+
+    await connection.execute(
+      `UPDATE meal_plans
+       SET planned_time = CASE meal_type
+         WHEN 'breakfast' THEN '07:30:00'
+         WHEN 'morning_snack' THEN '10:00:00'
+         WHEN 'lunch' THEN '12:30:00'
+         WHEN 'afternoon_snack' THEN '15:30:00'
+         WHEN 'dinner' THEN '19:00:00'
+         WHEN 'late_snack' THEN '21:00:00'
+         ELSE '12:00:00'
+       END
+       WHERE user_id = ? AND planned_time IS NULL`,
+      [demoUserId]
+    );
 
     for (let i = 0; i < 8; i += 1) {
       const date = isoDate(-7 + i);
