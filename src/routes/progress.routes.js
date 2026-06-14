@@ -4,6 +4,7 @@ const { z } = require("zod");
 const { query, transaction } = require("../config/database");
 const authenticate = require("../middleware/auth");
 const asyncHandler = require("../utils/async-handler");
+const HttpError = require("../utils/http-error");
 const { calculateBmi, getBmiCategory } = require("../utils/nutrition");
 
 const router = express.Router();
@@ -90,6 +91,106 @@ router.post(
     });
 
     res.status(201).json({ id, bmi, bmiCategory, message: "Progress berat badan berhasil disimpan." });
+  })
+);
+
+router.put(
+  "/weight/:id",
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const payload = weightLogSchema.partial().parse(req.body);
+    const existingRows = await query("SELECT * FROM weight_logs WHERE id = :id AND user_id = :userId", {
+      id: req.params.id,
+      userId: req.user.id
+    });
+
+    if (!existingRows.length) {
+      throw new HttpError(404, "Progress berat badan tidak ditemukan.");
+    }
+
+    const previous = existingRows[0];
+    const profileRows = await query("SELECT height_cm FROM profiles WHERE id = :userId", { userId: req.user.id });
+    const nextWeight = payload.weightKg ?? previous.weight_kg;
+    const bmi = calculateBmi(nextWeight, profileRows[0]?.height_cm);
+    const bmiCategory = getBmiCategory(bmi);
+
+    await transaction(async (connection) => {
+      await connection.execute(
+        `UPDATE weight_logs
+         SET weight_kg = ?,
+             body_fat_percentage = ?,
+             muscle_mass_kg = ?,
+             waist_cm = ?,
+             chest_cm = ?,
+             hip_cm = ?,
+             arm_cm = ?,
+             thigh_cm = ?,
+             bmi = ?,
+             bmi_category = ?,
+             log_date = ?,
+             notes = ?
+         WHERE id = ? AND user_id = ?`,
+        [
+          nextWeight,
+          payload.bodyFatPercentage ?? previous.body_fat_percentage,
+          payload.muscleMassKg ?? previous.muscle_mass_kg,
+          payload.waistCm ?? previous.waist_cm,
+          payload.chestCm ?? previous.chest_cm,
+          payload.hipCm ?? previous.hip_cm,
+          payload.armCm ?? previous.arm_cm,
+          payload.thighCm ?? previous.thigh_cm,
+          bmi,
+          bmiCategory,
+          payload.logDate || previous.log_date,
+          payload.notes ?? previous.notes,
+          req.params.id,
+          req.user.id
+        ]
+      );
+
+      const [latestRows] = await connection.execute(
+        `SELECT weight_kg FROM weight_logs WHERE user_id = ? ORDER BY log_date DESC, created_at DESC LIMIT 1`,
+        [req.user.id]
+      );
+      if (latestRows.length) {
+        await connection.execute("UPDATE profiles SET current_weight_kg = ? WHERE id = ?", [
+          latestRows[0].weight_kg,
+          req.user.id
+        ]);
+      }
+    });
+
+    res.json({ bmi, bmiCategory, message: "Progress berat badan berhasil diperbarui." });
+  })
+);
+
+router.delete(
+  "/weight/:id",
+  authenticate,
+  asyncHandler(async (req, res) => {
+    await transaction(async (connection) => {
+      const [existingRows] = await connection.execute("SELECT id FROM weight_logs WHERE id = ? AND user_id = ?", [
+        req.params.id,
+        req.user.id
+      ]);
+      if (!existingRows.length) {
+        throw new HttpError(404, "Progress berat badan tidak ditemukan.");
+      }
+
+      await connection.execute("DELETE FROM weight_logs WHERE id = ? AND user_id = ?", [req.params.id, req.user.id]);
+      const [latestRows] = await connection.execute(
+        `SELECT weight_kg FROM weight_logs WHERE user_id = ? ORDER BY log_date DESC, created_at DESC LIMIT 1`,
+        [req.user.id]
+      );
+      if (latestRows.length) {
+        await connection.execute("UPDATE profiles SET current_weight_kg = ? WHERE id = ?", [
+          latestRows[0].weight_kg,
+          req.user.id
+        ]);
+      }
+    });
+
+    res.json({ message: "Progress berat badan berhasil dihapus." });
   })
 );
 

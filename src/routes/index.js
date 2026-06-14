@@ -8,6 +8,9 @@ const profileRoutes = require("./profile.routes");
 const progressRoutes = require("./progress.routes");
 const settingsRoutes = require("./settings.routes");
 const notificationRoutes = require("./notifications.routes");
+const communityRoutes = require("./community.routes");
+const helpRoutes = require("./help.routes");
+const nutritionRoutes = require("./nutrition.routes");
 
 const router = express.Router();
 
@@ -20,5 +23,8 @@ router.use("/profile", profileRoutes);
 router.use("/progress", progressRoutes);
 router.use("/settings", settingsRoutes);
 router.use("/notifications", notificationRoutes);
+router.use("/community", communityRoutes);
+router.use("/help", helpRoutes);
+router.use("/nutrition", nutritionRoutes);
 
 module.exports = router;

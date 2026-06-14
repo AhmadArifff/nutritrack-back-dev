@@ -192,6 +192,96 @@ router.post(
   })
 );
 
+router.put(
+  "/:id",
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const existingRows = await query("SELECT * FROM food_logs WHERE id = :id AND user_id = :userId", {
+      id: req.params.id,
+      userId: req.user.id
+    });
+
+    if (!existingRows.length) {
+      throw new HttpError(404, "Log makanan tidak ditemukan.");
+    }
+
+    const previous = existingRows[0];
+    const payload = foodLogSchema.partial().parse(req.body);
+    const date = payload.logDate || previous.log_date;
+    let nutrition = {
+      calories: payload.calories ?? previous.calories,
+      proteinG: payload.proteinG ?? previous.protein_g,
+      carbohydratesG: payload.carbohydratesG ?? previous.carbohydrates_g,
+      fatG: payload.fatG ?? previous.fat_g,
+      fiberG: payload.fiberG ?? previous.fiber_g,
+      sugarG: payload.sugarG ?? previous.sugar_g,
+      sodiumMg: payload.sodiumMg ?? previous.sodium_mg
+    };
+    let foodName = payload.foodName || previous.food_name;
+    let servingUnit = payload.servingUnit || previous.serving_unit;
+    let servingSizeG = payload.servingSizeG ?? previous.serving_size_g;
+
+    if (payload.foodId) {
+      const foods = await query("SELECT * FROM food_database WHERE id = :id", { id: payload.foodId });
+      if (!foods.length) {
+        throw new HttpError(404, "Makanan tidak ditemukan.");
+      }
+      const food = foods[0];
+      foodName = payload.foodName || food.name;
+      servingUnit = payload.servingUnit || food.serving_unit;
+      servingSizeG = payload.servingSizeG ?? food.serving_size_g;
+      nutrition = scaleNutrition(food, payload.servingAmount || Number(previous.serving_amount || 1));
+    }
+
+    await transaction(async (connection) => {
+      await connection.execute(
+        `UPDATE food_logs
+         SET food_id = ?,
+             food_name = ?,
+             meal_type = ?,
+             log_date = ?,
+             serving_amount = ?,
+             serving_unit = ?,
+             serving_size_g = ?,
+             calories = ?,
+             protein_g = ?,
+             carbohydrates_g = ?,
+             fat_g = ?,
+             fiber_g = ?,
+             sugar_g = ?,
+             sodium_mg = ?,
+             notes = ?
+         WHERE id = ? AND user_id = ?`,
+        [
+          payload.foodId ?? previous.food_id,
+          foodName,
+          payload.mealType || previous.meal_type,
+          date,
+          payload.servingAmount ?? previous.serving_amount,
+          servingUnit,
+          servingSizeG || null,
+          nutrition.calories,
+          nutrition.proteinG,
+          nutrition.carbohydratesG,
+          nutrition.fatG,
+          nutrition.fiberG,
+          nutrition.sugarG,
+          nutrition.sodiumMg,
+          payload.notes ?? previous.notes,
+          req.params.id,
+          req.user.id
+        ]
+      );
+      await refreshDailySummary(connection, req.user.id, previous.log_date);
+      if (String(previous.log_date) !== String(date)) {
+        await refreshDailySummary(connection, req.user.id, date);
+      }
+    });
+
+    res.json({ message: "Log makanan berhasil diperbarui." });
+  })
+);
+
 router.delete(
   "/:id",
   authenticate,

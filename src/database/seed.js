@@ -71,6 +71,77 @@ const achievements = [
   ["TARGET_REACHED", "Target Tercapai", "Mencapai berat badan target", "medal", "milestone", 500, "target_reached", 1]
 ];
 
+const communityChallenges = [
+  [
+    "Mediterranean Meal Prep",
+    "Complete four colorful lunches this week with balanced protein, fiber, and healthy fats.",
+    "HOT",
+    "orange",
+    "2.4K",
+    "/assets/remote/remote-001-100fa2b2f7.jpg"
+  ],
+  [
+    "Hydration Hero",
+    "Hit your water target for seven straight days and keep your energy steady.",
+    "HIGH IMPACT",
+    "purple",
+    "1.8K",
+    "/assets/remote/remote-002-0eb63fe01f.jpg"
+  ]
+];
+
+const communityLeaderboard = [
+  ["Elena", 31, "/assets/remote/remote-103-8125076983.jpg", true],
+  ["Marcus", 24, "/assets/remote/remote-104-f61b0c45bd.jpg", false],
+  ["Nadia", 19, "/assets/remote/remote-105-a1d5c3dbf1.jpg", false]
+];
+
+const communityBuddies = [
+  ["Maya Chen", "Morning runner - macro focused", "/assets/remote/remote-106-452cb5ee02.jpg", 94, "Protein goals"],
+  ["Ardi Putra", "Meal prep beginner", "/assets/remote/remote-107-ba28e4d23e.jpg", 88, "Weight loss"],
+  ["Sofia Lee", "Plant-forward cook", "/assets/remote/remote-108-362b1244b4.jpg", 82, "Fiber target"]
+];
+
+const communityPosts = [
+  [
+    "Rina Mahendra",
+    "Balanced Plate Crew",
+    "/assets/remote/remote-109-1523cefa16.jpg",
+    "Swapped fried snacks for Greek yogurt and fruit this week. Energy after lunch feels so much better.",
+    "/assets/remote/remote-110-a772a15655.jpg",
+    128,
+    18
+  ]
+];
+
+const helpCategories = [
+  ["Akun", "Kelola profil, password, dan preferensi login NutriTrack.", "User", "bg-success-light text-primary"],
+  ["Nutrisi", "Pelajari pelacakan kalori, makro, dan database makanan.", "Utensils", "bg-red-50 text-error-red"],
+  ["Perangkat", "Hubungkan wearable, sinkronisasi data, dan izin aplikasi.", "Settings", "bg-blue-50 text-info-blue"],
+  ["Pembayaran", "Atur paket, invoice, dan riwayat tagihan.", "CreditCard", "bg-orange-50 text-energy-orange"]
+];
+
+const helpTutorials = [
+  [
+    "Memulai meal plan pertama",
+    "Buat jadwal makan mingguan dari target kalori dan preferensi dapur.",
+    "4 min",
+    "/assets/remote/remote-029-69c4ae2e87.jpg"
+  ],
+  [
+    "Cara membaca progress makro",
+    "Pahami protein, karbohidrat, lemak, dan fiber dengan cepat.",
+    "3 min",
+    "/assets/remote/remote-110-a772a15655.jpg"
+  ]
+];
+
+const helpFaqs = [
+  ["Bagaimana cara mengganti target kalori?", "Buka Settings, pilih preferensi nutrisi, lalu simpan target kalori harian baru.", "nutrition"],
+  ["Apakah data saya tersinkron otomatis?", "Data tersimpan ke akun Anda saat backend aktif dan koneksi internet tersedia.", "account"],
+  ["Bagaimana mengelola paket Pro?", "Buka Settings lalu gunakan bagian NutriTrack Pro untuk melihat pengelolaan paket dan riwayat tagihan.", "billing"]
+];
+
 async function upsertFood(connection, food) {
   const [existing] = await connection.execute("SELECT id FROM food_database WHERE name = ? AND is_custom = FALSE LIMIT 1", [food[0]]);
   const id = existing[0]?.id || randomUUID();
@@ -125,7 +196,7 @@ async function main() {
   try {
     await connection.execute(
       `INSERT INTO users (id, email, password_hash, full_name, avatar_url, email_verified_at)
-       VALUES (?, 'alex@nutritrack.app', ?, 'Alex Carter', 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=160&h=160&fit=crop&crop=face', NOW())
+       VALUES (?, 'alex@nutritrack.app', ?, 'Alex Carter', '/assets/remote/remote-112-d263952e2e.jpg', NOW())
        ON DUPLICATE KEY UPDATE
         password_hash = VALUES(password_hash),
         full_name = VALUES(full_name),
@@ -140,7 +211,7 @@ async function main() {
         target_fiber_g, target_water_ml, diet_type, allergies, cuisine_preferences, weekly_weight_goal_kg,
         target_date, bmr, tdee, onboarding_completed, streak_days, total_points)
        VALUES
-       (?, 'Alex Carter', 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=160&h=160&fit=crop&crop=face',
+       (?, 'Alex Carter', '/assets/remote/remote-112-d263952e2e.jpg',
         '1995-05-15', 'male', 178, 78.5, 74, 'moderately_active', 'lose_weight', 2100, 180, 300, 75,
         35, 2500, 'omnivore', ?, ?, -0.5, '2026-09-30', 1780, 2450, TRUE, 7, 320)
        ON DUPLICATE KEY UPDATE
@@ -307,6 +378,85 @@ async function main() {
         { user_id: demoUserId, title },
         "INSERT INTO notifications (id, user_id, title, message, type) VALUES (?, ?, ?, ?, ?)",
         [randomUUID(), demoUserId, title, message, type]
+      );
+    }
+
+    for (const [index, challenge] of communityChallenges.entries()) {
+      await insertIfMissing(
+        connection,
+        "community_challenges",
+        { title: challenge[0] },
+        `INSERT INTO community_challenges
+         (id, title, description, badge, badge_tone, participants_label, image_url, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [randomUUID(), ...challenge, index + 1]
+      );
+    }
+
+    for (const [index, member] of communityLeaderboard.entries()) {
+      await insertIfMissing(
+        connection,
+        "community_leaderboard",
+        { name: member[0] },
+        `INSERT INTO community_leaderboard (id, name, streak_days, avatar_url, is_top, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [randomUUID(), ...member, index + 1]
+      );
+    }
+
+    for (const [index, buddy] of communityBuddies.entries()) {
+      await insertIfMissing(
+        connection,
+        "community_buddies",
+        { name: buddy[0] },
+        `INSERT INTO community_buddies (id, name, meta, avatar_url, match_percent, focus, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [randomUUID(), ...buddy, index + 1]
+      );
+    }
+
+    for (const post of communityPosts) {
+      await insertIfMissing(
+        connection,
+        "community_posts",
+        { author_name: post[0], body: post[3] },
+        `INSERT INTO community_posts
+         (id, author_name, author_badge, author_avatar_url, body, image_url, cheers_count, comments_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [randomUUID(), ...post]
+      );
+    }
+
+    for (const [index, category] of helpCategories.entries()) {
+      await insertIfMissing(
+        connection,
+        "help_categories",
+        { title: category[0] },
+        `INSERT INTO help_categories (id, title, description, icon, tone, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [randomUUID(), ...category, index + 1]
+      );
+    }
+
+    for (const [index, tutorial] of helpTutorials.entries()) {
+      await insertIfMissing(
+        connection,
+        "help_tutorials",
+        { title: tutorial[0] },
+        `INSERT INTO help_tutorials (id, title, description, duration, image_url, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [randomUUID(), ...tutorial, index + 1]
+      );
+    }
+
+    for (const [index, faq] of helpFaqs.entries()) {
+      await insertIfMissing(
+        connection,
+        "help_faqs",
+        { question: faq[0] },
+        `INSERT INTO help_faqs (id, question, answer, category, sort_order)
+         VALUES (?, ?, ?, ?, ?)`,
+        [randomUUID(), ...faq, index + 1]
       );
     }
 
