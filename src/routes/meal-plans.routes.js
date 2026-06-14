@@ -161,16 +161,18 @@ router.get(
     const to = String(req.query.to || from);
     const rows = await query(
       `SELECT
-         COALESCE(fd.sub_category, 'Groceries') AS groupName,
-         mp.food_name AS name,
-         SUM(mp.serving_amount) AS amount,
-         COALESCE(mp.serving_unit, fd.serving_unit, 'porsi') AS unit,
-         COUNT(*) AS meals
+         COALESCE(fi.category, fd.sub_category, 'Groceries') AS groupName,
+         COALESCE(fi.ingredient_name, mp.food_name) AS name,
+         SUM(COALESCE(fi.quantity_per_serving, 1) * mp.serving_amount) AS amount,
+         COALESCE(fi.unit, mp.serving_unit, fd.serving_unit, 'porsi') AS unit,
+         COUNT(DISTINCT mp.id) AS meals,
+         GROUP_CONCAT(DISTINCT mp.food_name ORDER BY mp.food_name SEPARATOR ', ') AS menuNames
        FROM meal_plans mp
        LEFT JOIN food_database fd ON fd.id = mp.food_id
+       LEFT JOIN food_ingredients fi ON fi.food_id = fd.id
        WHERE mp.user_id = :userId AND mp.plan_date BETWEEN :from AND :to
-       GROUP BY groupName, mp.food_name, unit
-       ORDER BY groupName, name`,
+       GROUP BY groupName, name, unit
+       ORDER BY groupName, MIN(COALESCE(fi.sort_order, 99)), name`,
       { userId: req.user.id, from, to }
     );
 
@@ -180,7 +182,7 @@ router.get(
       acc[group].push({
         name: row.name,
         amount: `${Number(row.amount || 0).toLocaleString("en-US", { maximumFractionDigits: 1 })} ${row.unit}`,
-        meals: `${row.meals} meal${Number(row.meals) > 1 ? "s" : ""}`
+        meals: `${row.meals} meal${Number(row.meals) > 1 ? "s" : ""} - ${row.menuNames || "Meal plan"}`
       });
       return acc;
     }, {});

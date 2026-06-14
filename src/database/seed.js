@@ -57,6 +57,25 @@ const foods = [
   ["Biskuit Gandum", "Whole Grain Crackers", "snack", "snack", "bungkus", 30, 120, 3, 22, 2.5, 2, 2, 150, false, ["biskuit", "gandum"]]
 ];
 
+const detailedFoodIngredients = {
+  "Nasi Goreng": [["Nasi putih matang", 180, "g", "Pantry"], ["Telur ayam", 1, "butir", "Protein"], ["Minyak goreng", 1, "sdm", "Pantry"], ["Bawang merah", 2, "siung", "Produce"], ["Bawang putih", 1, "siung", "Produce"], ["Kecap manis", 1, "sdm", "Condiments"]],
+  "Bubur Ayam": [["Beras", 55, "g", "Pantry"], ["Dada ayam suwir", 45, "g", "Protein"], ["Kaldu ayam", 250, "ml", "Pantry"], ["Daun bawang", 10, "g", "Produce"], ["Bawang goreng", 5, "g", "Condiments"]],
+  "Telur Dadar": [["Telur ayam", 2, "butir", "Protein"], ["Minyak goreng", 1, "sdm", "Pantry"], ["Daun bawang", 10, "g", "Produce"]],
+  "Daging Sapi Rendang": [["Daging sapi", 100, "g", "Protein"], ["Santan", 80, "ml", "Dairy & Coconut"], ["Cabai merah", 20, "g", "Produce"], ["Bawang merah", 25, "g", "Produce"], ["Bawang putih", 10, "g", "Produce"], ["Lengkuas", 8, "g", "Spices"], ["Serai", 1, "batang", "Spices"]],
+  "Soto Ayam": [["Dada ayam", 70, "g", "Protein"], ["Bihun", 40, "g", "Pantry"], ["Kol", 40, "g", "Produce"], ["Tauge", 30, "g", "Produce"], ["Kaldu ayam", 300, "ml", "Pantry"], ["Bumbu soto", 1, "porsi", "Spices"]],
+  "Gado-Gado": [["Kangkung", 45, "g", "Produce"], ["Tauge", 35, "g", "Produce"], ["Tahu", 50, "g", "Protein"], ["Tempe", 50, "g", "Protein"], ["Telur rebus", 1, "butir", "Protein"], ["Saus kacang", 60, "g", "Condiments"], ["Lontong", 80, "g", "Pantry"]],
+  "Pecel": [["Bayam", 50, "g", "Produce"], ["Kacang panjang", 45, "g", "Produce"], ["Tauge", 35, "g", "Produce"], ["Kol", 35, "g", "Produce"], ["Sambal kacang", 55, "g", "Condiments"], ["Peyek", 15, "g", "Pantry"]],
+  "Bakso": [["Bakso sapi", 5, "pcs", "Protein"], ["Kuah kaldu sapi", 300, "ml", "Pantry"], ["Mie kuning", 40, "g", "Pantry"], ["Bihun", 25, "g", "Pantry"], ["Sawi hijau", 40, "g", "Produce"], ["Seledri", 5, "g", "Produce"]],
+  "Mie Goreng": [["Mie telur", 120, "g", "Pantry"], ["Telur ayam", 1, "butir", "Protein"], ["Kol", 40, "g", "Produce"], ["Sawi hijau", 35, "g", "Produce"], ["Kecap manis", 1, "sdm", "Condiments"], ["Minyak goreng", 1, "sdm", "Pantry"]],
+  "Ketoprak": [["Lontong", 120, "g", "Pantry"], ["Tahu", 80, "g", "Protein"], ["Tauge", 50, "g", "Produce"], ["Bihun", 45, "g", "Pantry"], ["Saus kacang", 65, "g", "Condiments"]],
+  "Siomay": [["Siomay ikan", 4, "pcs", "Protein"], ["Kentang", 80, "g", "Produce"], ["Kol", 50, "g", "Produce"], ["Tahu", 50, "g", "Protein"], ["Saus kacang", 45, "g", "Condiments"]],
+  "Lontong Sayur": [["Lontong", 150, "g", "Pantry"], ["Labu siam", 80, "g", "Produce"], ["Santan", 100, "ml", "Dairy & Coconut"], ["Telur rebus", 1, "butir", "Protein"], ["Bumbu kuning", 1, "porsi", "Spices"]],
+  "Smoothie Pisang": [["Pisang", 1, "buah", "Produce"], ["Susu skim", 200, "ml", "Dairy & Coconut"], ["Oatmeal", 25, "g", "Pantry"], ["Es batu", 1, "gelas", "Pantry"]],
+  "Jus Jeruk Segar": [["Jeruk segar", 3, "buah", "Produce"], ["Air", 50, "ml", "Pantry"]],
+  "Oatmeal": [["Oat", 80, "g", "Pantry"], ["Air atau susu", 200, "ml", "Dairy & Coconut"]],
+  "Greek Yogurt": [["Greek yogurt", 150, "g", "Dairy & Coconut"]]
+};
+
 const achievements = [
   ["FIRST_LOG", "Langkah Pertama", "Log makanan pertama kali", "target", "milestone", 10, "total_food_logs", 1],
   ["STREAK_3", "Konsisten 3 Hari", "Log makanan 3 hari berturut-turut", "flame", "consistency", 20, "streak_days", 3],
@@ -181,6 +200,22 @@ async function insertIfMissing(connection, table, lookup, insertSql, values) {
   }
 }
 
+async function upsertFoodIngredients(connection, foodId, foodName, fallbackUnit, fallbackCategory) {
+  const ingredients = detailedFoodIngredients[foodName] || [[foodName, 1, fallbackUnit || "porsi", fallbackCategory || "Groceries"]];
+  for (const [index, ingredient] of ingredients.entries()) {
+    await connection.execute(
+      `INSERT INTO food_ingredients
+       (id, food_id, ingredient_name, quantity_per_serving, unit, category, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         quantity_per_serving = VALUES(quantity_per_serving),
+         category = VALUES(category),
+         sort_order = VALUES(sort_order)`,
+      [randomUUID(), foodId, ingredient[0], ingredient[1], ingredient[2], ingredient[3], index + 1]
+    );
+  }
+}
+
 async function main() {
   const connection = await mysql.createConnection({
     host: env.db.host,
@@ -255,6 +290,7 @@ async function main() {
     const foodIdByName = {};
     for (const food of foods) {
       foodIdByName[food[0]] = await upsertFood(connection, food);
+      await upsertFoodIngredients(connection, foodIdByName[food[0]], food[0], food[4], food[3]);
     }
 
     for (const achievement of achievements) {
