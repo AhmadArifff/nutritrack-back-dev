@@ -124,6 +124,9 @@ function compactNumber(value = 0) {
 
 function normalizeChallenge(item) {
   const participantCount = Number(item.joined_count || item.participant_count || 0);
+  const totalTasks = Number(item.total_tasks || 0);
+  const completedTasks = Number(item.completed_tasks || 0);
+  const progressPercent = totalTasks ? Math.min(Math.round((completedTasks / totalTasks) * 100), 100) : 0;
   return {
     id: item.id,
     title: item.title,
@@ -139,7 +142,23 @@ function normalizeChallenge(item) {
     participantCount,
     participantLabel: `+${compactNumber(participantCount || 1200)}`,
     isJoined: Boolean(item.is_joined),
-    isPremium: Boolean(item.is_premium)
+    isPremium: Boolean(item.is_premium),
+    status: item.member_status || (item.is_joined ? "joined" : "available"),
+    joinedAt: item.joined_at,
+    completedAt: item.completed_at,
+    progress: {
+      totalTasks,
+      completedTasks,
+      percent: progressPercent,
+      currentDay: Number(item.current_day || item.progress_day || 1),
+      earnedPoints: Number(item.earned_points || 0)
+    },
+    reward: {
+      points: Number(item.reward_points || 100),
+      badge: item.reward_badge || `${item.title} Badge`,
+      achievementCode: item.reward_achievement_code || "CHALLENGE_FINISHER"
+    },
+    nextUrl: `/app/community/challenges/${item.id}`
   };
 }
 
@@ -155,6 +174,7 @@ function normalizePost(item) {
     content: item.content || item.body,
     imageUrl: item.image_url,
     postType: item.post_type || "story",
+    relatedChallengeId: item.related_challenge_id,
     achievementLabel: item.achievement_label || item.author_badge,
     createdAt: item.created_at,
     cheersCount: Number(item.cheers_count || 0),
@@ -196,8 +216,20 @@ async function loadOverview(req) {
     query(
       `SELECT c.*,
         (SELECT COUNT(*) FROM community_challenge_members cm WHERE cm.challenge_id = c.id AND cm.status IN ('joined', 'completed')) AS joined_count,
-        EXISTS(SELECT 1 FROM community_challenge_members cm WHERE cm.challenge_id = c.id AND cm.user_id = :userId AND cm.status IN ('joined', 'completed')) AS is_joined
+        EXISTS(SELECT 1 FROM community_challenge_members cm WHERE cm.challenge_id = c.id AND cm.user_id = :userId AND cm.status IN ('joined', 'completed')) AS is_joined,
+        cm.status AS member_status,
+        cm.joined_at,
+        cm.completed_at,
+        LEAST(DATEDIFF(CURRENT_DATE, DATE(COALESCE(cm.joined_at, CURRENT_DATE))) + 1, COALESCE(c.duration_days, 7)) AS current_day,
+        (SELECT COUNT(*) FROM community_challenge_tasks t WHERE t.challenge_id = c.id) AS total_tasks,
+        (SELECT COUNT(DISTINCT cc.task_id) FROM community_challenge_checkins cc WHERE cc.challenge_id = c.id AND cc.user_id = :userId AND cc.status = 'completed') AS completed_tasks,
+        (SELECT COALESCE(SUM(t.points), 0)
+          FROM community_challenge_checkins cc
+          JOIN community_challenge_tasks t ON t.id = cc.task_id
+          WHERE cc.challenge_id = c.id AND cc.user_id = :userId AND cc.status = 'completed') +
+          CASE WHEN cm.status = 'completed' THEN COALESCE(c.reward_points, 100) ELSE 0 END AS earned_points
        FROM community_challenges c
+       LEFT JOIN community_challenge_members cm ON cm.challenge_id = c.id AND cm.user_id = :userId
        WHERE c.is_active = TRUE
        ORDER BY c.sort_order, c.created_at DESC
        LIMIT 8`,
@@ -221,7 +253,7 @@ async function loadOverview(req) {
     ),
     query(
       `SELECT p.id, p.user_id, p.author_name, p.author_badge, p.author_avatar_url, p.body AS content, p.image_url,
-        p.post_type, p.achievement_label,
+        p.post_type, p.achievement_label, p.related_challenge_id,
         p.cheers_count,
         (SELECT COUNT(*) FROM community_post_comments pc WHERE pc.post_id = p.id AND pc.deleted_at IS NULL) AS comments_count,
         COALESCE(p.shares_count, 0) AS shares_count,
@@ -287,6 +319,252 @@ async function ensureExists(table, id, message) {
   if (!rows.length) throw new HttpError(404, message);
 }
 
+function normalizeChallengeTask(item = {}, currentDay = 1) {
+  return {
+    id: item.id,
+    challengeId: item.challenge_id,
+    dayNumber: Number(item.day_number || 1),
+    title: item.title,
+    description: item.description,
+    taskType: item.task_type || "manual",
+    targetValue: Number(item.target_value || 1),
+    targetUnit: item.target_unit || "check",
+    points: Number(item.points || 10),
+    status: item.user_status || "pending",
+    sourceType: item.source_type,
+    value: Number(item.checkin_value || 0),
+    completedAt: item.completed_at,
+    isUnlocked: Number(item.day_number || 1) <= currentDay,
+    isToday: Number(item.day_number || 1) === currentDay
+  };
+}
+
+async function getChallengeProgress(challengeId, userId) {
+  const [row] = await query(
+    `SELECT
+      (SELECT COUNT(*) FROM community_challenge_tasks WHERE challenge_id = :challengeId) AS total_tasks,
+      (SELECT COUNT(DISTINCT task_id) FROM community_challenge_checkins WHERE challenge_id = :challengeId AND user_id = :userId AND status = 'completed') AS completed_tasks,
+      (SELECT COALESCE(SUM(t.points), 0)
+        FROM community_challenge_checkins cc
+        JOIN community_challenge_tasks t ON t.id = cc.task_id
+        WHERE cc.challenge_id = :challengeId AND cc.user_id = :userId AND cc.status = 'completed') AS task_points`,
+    { challengeId, userId }
+  );
+  const totalTasks = Number(row?.total_tasks || 0);
+  const completedTasks = Number(row?.completed_tasks || 0);
+  return {
+    totalTasks,
+    completedTasks,
+    percent: totalTasks ? Math.min(Math.round((completedTasks / totalTasks) * 100), 100) : 0,
+    taskPoints: Number(row?.task_points || 0)
+  };
+}
+
+async function maybeAwardChallenge(challengeId, userId) {
+  const [challenge] = await query(
+    `SELECT c.id, c.title, c.reward_points, c.reward_badge, c.reward_achievement_code, cm.status
+     FROM community_challenges c
+     JOIN community_challenge_members cm ON cm.challenge_id = c.id AND cm.user_id = :userId
+     WHERE c.id = :challengeId`,
+    { challengeId, userId }
+  );
+  if (!challenge || challenge.status === "completed") return false;
+
+  const progress = await getChallengeProgress(challengeId, userId);
+  if (!progress.totalTasks || progress.completedTasks < progress.totalTasks) return false;
+
+  await query(
+    `UPDATE community_challenge_members
+     SET status = 'completed', progress_day = GREATEST(progress_day, 1), completed_at = NOW()
+     WHERE challenge_id = :challengeId AND user_id = :userId`,
+    { challengeId, userId }
+  );
+
+  await query(
+    `INSERT IGNORE INTO user_achievements (id, user_id, achievement_id)
+     SELECT UUID(), :userId, id FROM achievements WHERE code = :code`,
+    { userId, code: challenge.reward_achievement_code || "CHALLENGE_FINISHER" }
+  );
+
+  await query(
+    `INSERT INTO notifications (id, user_id, title, message, type)
+     VALUES (UUID(), :userId, :title, :message, 'achievement')`,
+    {
+      userId,
+      title: "Challenge selesai",
+      message: `Kamu mendapatkan ${challenge.reward_badge || `${challenge.title} Badge`} dan ${Number(challenge.reward_points || 100)} points.`
+    }
+  );
+  return true;
+}
+
+async function loadChallengeDetail(req, challengeId) {
+  const params = { userId: req.user.id, challengeId };
+  const [challenge] = await query(
+    `SELECT c.*,
+      (SELECT COUNT(*) FROM community_challenge_members cm2 WHERE cm2.challenge_id = c.id AND cm2.status IN ('joined', 'completed')) AS joined_count,
+      EXISTS(SELECT 1 FROM community_challenge_members cm3 WHERE cm3.challenge_id = c.id AND cm3.user_id = :userId AND cm3.status IN ('joined', 'completed')) AS is_joined,
+      cm.status AS member_status,
+      cm.joined_at,
+      cm.completed_at,
+      LEAST(DATEDIFF(CURRENT_DATE, DATE(COALESCE(cm.joined_at, CURRENT_DATE))) + 1, COALESCE(c.duration_days, 7)) AS current_day,
+      (SELECT COUNT(*) FROM community_challenge_tasks t WHERE t.challenge_id = c.id) AS total_tasks,
+      (SELECT COUNT(DISTINCT cc.task_id) FROM community_challenge_checkins cc WHERE cc.challenge_id = c.id AND cc.user_id = :userId AND cc.status = 'completed') AS completed_tasks,
+      (SELECT COALESCE(SUM(t.points), 0)
+        FROM community_challenge_checkins cc
+        JOIN community_challenge_tasks t ON t.id = cc.task_id
+        WHERE cc.challenge_id = c.id AND cc.user_id = :userId AND cc.status = 'completed') +
+        CASE WHEN cm.status = 'completed' THEN COALESCE(c.reward_points, 100) ELSE 0 END AS earned_points
+     FROM community_challenges c
+     LEFT JOIN community_challenge_members cm ON cm.challenge_id = c.id AND cm.user_id = :userId
+     WHERE c.id = :challengeId AND c.is_active = TRUE`,
+    params
+  );
+  if (!challenge) throw new HttpError(404, "Challenge tidak ditemukan.");
+
+  const currentDay = Math.max(Number(challenge.current_day || 1), 1);
+  const [tasks, leaderboard, posts] = await Promise.all([
+    query(
+      `SELECT t.*,
+        (SELECT cc.status FROM community_challenge_checkins cc WHERE cc.task_id = t.id AND cc.user_id = :userId AND cc.status = 'completed' ORDER BY cc.completed_at DESC LIMIT 1) AS user_status,
+        (SELECT cc.source_type FROM community_challenge_checkins cc WHERE cc.task_id = t.id AND cc.user_id = :userId AND cc.status = 'completed' ORDER BY cc.completed_at DESC LIMIT 1) AS source_type,
+        (SELECT cc.value FROM community_challenge_checkins cc WHERE cc.task_id = t.id AND cc.user_id = :userId AND cc.status = 'completed' ORDER BY cc.completed_at DESC LIMIT 1) AS checkin_value,
+        (SELECT cc.completed_at FROM community_challenge_checkins cc WHERE cc.task_id = t.id AND cc.user_id = :userId AND cc.status = 'completed' ORDER BY cc.completed_at DESC LIMIT 1) AS completed_at
+       FROM community_challenge_tasks t
+       WHERE t.challenge_id = :challengeId
+       ORDER BY t.day_number, t.sort_order, t.created_at`,
+      params
+    ),
+    query(
+      `SELECT p.id AS user_id, p.full_name, p.avatar_url, cm.status,
+        COUNT(DISTINCT cc.task_id) AS completed_tasks,
+        COALESCE(SUM(t.points), 0) + CASE WHEN cm.status = 'completed' THEN COALESCE(c.reward_points, 100) ELSE 0 END AS earned_points,
+        MAX(cc.completed_at) AS last_checkin_at
+       FROM community_challenge_members cm
+       JOIN community_challenges c ON c.id = cm.challenge_id
+       JOIN profiles p ON p.id = cm.user_id
+       LEFT JOIN community_challenge_checkins cc ON cc.challenge_id = cm.challenge_id AND cc.user_id = cm.user_id AND cc.status = 'completed'
+       LEFT JOIN community_challenge_tasks t ON t.id = cc.task_id
+       WHERE cm.challenge_id = :challengeId AND cm.status IN ('joined', 'completed')
+       GROUP BY p.id, p.full_name, p.avatar_url, cm.status, c.reward_points
+       ORDER BY earned_points DESC, completed_tasks DESC, last_checkin_at DESC
+       LIMIT 10`,
+      params
+    ),
+    query(
+      `SELECT p.id, p.user_id, p.author_name, p.author_badge, p.author_avatar_url, p.body AS content, p.image_url,
+        p.post_type, p.achievement_label, p.related_challenge_id, p.cheers_count,
+        (SELECT COUNT(*) FROM community_post_comments pc WHERE pc.post_id = p.id AND pc.deleted_at IS NULL) AS comments_count,
+        COALESCE(p.shares_count, 0) AS shares_count,
+        p.created_at, p.updated_at,
+        EXISTS(SELECT 1 FROM community_post_cheers pc WHERE pc.post_id = p.id AND pc.user_id = :userId) AS is_cheered
+       FROM community_posts p
+       WHERE p.deleted_at IS NULL AND COALESCE(p.visibility, 'public') = 'public' AND p.related_challenge_id = :challengeId
+       ORDER BY p.created_at DESC
+       LIMIT 6`,
+      params
+    )
+  ]);
+
+  const normalized = normalizeChallenge(challenge);
+  return {
+    challenge: normalized,
+    membership: {
+      isJoined: normalized.isJoined,
+      status: normalized.status,
+      joinedAt: normalized.joinedAt,
+      completedAt: normalized.completedAt
+    },
+    unlocks: [
+      "Daily hybrid tasks from logs and manual check-ins",
+      "Challenge-only leaderboard and community feed",
+      `${normalized.reward.badge} + ${normalized.reward.points} reward points`
+    ],
+    tasks: tasks.map((task) => normalizeChallengeTask(task, currentDay)),
+    todayTasks: tasks.filter((task) => Number(task.day_number || 1) === currentDay).map((task) => normalizeChallengeTask(task, currentDay)),
+    leaderboard: leaderboard.map((item, index) => ({
+      rank: index + 1,
+      userId: item.user_id,
+      name: item.full_name,
+      avatarUrl: item.avatar_url,
+      status: item.status,
+      completedTasks: Number(item.completed_tasks || 0),
+      earnedPoints: Number(item.earned_points || 0)
+    })),
+    feed: posts.map(normalizePost)
+  };
+}
+
+async function syncChallengeProgress(req, challengeId) {
+  const userId = req.user.id;
+  const [member] = await query(
+    `SELECT cm.*, c.duration_days
+     FROM community_challenge_members cm
+     JOIN community_challenges c ON c.id = cm.challenge_id
+     WHERE cm.challenge_id = :challengeId AND cm.user_id = :userId AND cm.status IN ('joined', 'completed')`,
+    { challengeId, userId }
+  );
+  if (!member) throw new HttpError(403, "Join challenge terlebih dahulu untuk sinkron progress.");
+
+  const currentDay = Math.max(Math.min(
+    Math.floor((Date.now() - new Date(member.joined_at || Date.now()).getTime()) / 86400000) + 1,
+    Number(member.duration_days || 7)
+  ), 1);
+
+  const tasks = await query(
+    `SELECT * FROM community_challenge_tasks
+     WHERE challenge_id = :challengeId AND day_number <= :currentDay AND task_type <> 'manual'
+     ORDER BY day_number, sort_order`,
+    { challengeId, currentDay }
+  );
+
+  let completedNow = 0;
+  for (const task of tasks) {
+    let value = 0;
+    if (task.task_type === "food_log") {
+      const [row] = await query("SELECT COUNT(*) AS value FROM food_logs WHERE user_id = :userId AND log_date = CURRENT_DATE", { userId });
+      value = Number(row?.value || 0);
+    } else if (task.task_type === "water_intake") {
+      const [row] = await query("SELECT COALESCE(SUM(amount_ml), 0) AS value FROM water_logs WHERE user_id = :userId AND log_date = CURRENT_DATE", { userId });
+      value = Number(row?.value || 0);
+    } else if (task.task_type === "weight_log") {
+      const [row] = await query("SELECT COUNT(*) AS value FROM weight_logs WHERE user_id = :userId AND log_date = CURRENT_DATE", { userId });
+      value = Number(row?.value || 0);
+    } else if (task.task_type === "challenge_post") {
+      const [row] = await query(
+        `SELECT COUNT(*) AS value FROM community_posts
+         WHERE user_id = :userId AND related_challenge_id = :challengeId AND post_type = 'challenge_update' AND deleted_at IS NULL`,
+        { userId, challengeId }
+      );
+      value = Number(row?.value || 0);
+    }
+
+    if (value >= Number(task.target_value || 1)) {
+      const result = await query(
+        `INSERT INTO community_challenge_checkins
+          (id, challenge_id, task_id, user_id, checkin_date, source_type, status, value, completed_at)
+         VALUES (UUID(), :challengeId, :taskId, :userId, CURRENT_DATE, :sourceType, 'completed', :value, NOW())
+         ON DUPLICATE KEY UPDATE
+          status = 'completed',
+          source_type = VALUES(source_type),
+          value = GREATEST(value, VALUES(value)),
+          completed_at = COALESCE(completed_at, NOW())`,
+        { challengeId, taskId: task.id, userId, sourceType: task.task_type, value }
+      );
+      if (result.affectedRows === 1) completedNow += 1;
+    }
+  }
+
+  await query(
+    `UPDATE community_challenge_members
+     SET progress_day = GREATEST(progress_day, :currentDay)
+     WHERE challenge_id = :challengeId AND user_id = :userId`,
+    { challengeId, userId, currentDay }
+  );
+  const awarded = await maybeAwardChallenge(challengeId, userId);
+  return { completedNow, awarded };
+}
+
 router.get(
   "/overview",
   authenticate,
@@ -312,6 +590,62 @@ router.get(
 );
 
 router.get(
+  "/challenges/:id",
+  authenticate,
+  asyncHandler(async (req, res) => {
+    res.json(await loadChallengeDetail(req, req.params.id));
+  })
+);
+
+router.post(
+  "/challenges/:id/sync",
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const result = await syncChallengeProgress(req, req.params.id);
+    const detail = await loadChallengeDetail(req, req.params.id);
+    res.json({ ...result, ...detail });
+  })
+);
+
+router.post(
+  "/challenges/:id/tasks/:taskId/check-in",
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const [task] = await query(
+      `SELECT t.*
+       FROM community_challenge_tasks t
+       JOIN community_challenge_members cm ON cm.challenge_id = t.challenge_id AND cm.user_id = :userId
+       WHERE t.id = :taskId AND t.challenge_id = :challengeId AND cm.status IN ('joined', 'completed')`,
+      { taskId: req.params.taskId, challengeId: req.params.id, userId: req.user.id }
+    );
+    if (!task) throw new HttpError(404, "Task challenge tidak ditemukan atau belum bisa diakses.");
+
+    const value = Number(req.body?.value || task.target_value || 1);
+    await query(
+      `INSERT INTO community_challenge_checkins
+        (id, challenge_id, task_id, user_id, checkin_date, source_type, status, value, note, completed_at)
+       VALUES (UUID(), :challengeId, :taskId, :userId, CURRENT_DATE, 'manual', 'completed', :value, :note, NOW())
+       ON DUPLICATE KEY UPDATE
+        status = 'completed',
+        source_type = 'manual',
+        value = GREATEST(value, VALUES(value)),
+        note = COALESCE(VALUES(note), note),
+        completed_at = COALESCE(completed_at, NOW())`,
+      {
+        challengeId: req.params.id,
+        taskId: req.params.taskId,
+        userId: req.user.id,
+        value,
+        note: req.body?.note ? cleanText(req.body.note) : null
+      }
+    );
+    const awarded = await maybeAwardChallenge(req.params.id, req.user.id);
+    const detail = await loadChallengeDetail(req, req.params.id);
+    res.json({ awarded, ...detail });
+  })
+);
+
+router.get(
   "/feed",
   authenticate,
   asyncHandler(async (req, res) => {
@@ -319,6 +653,7 @@ router.get(
     const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 30);
     const offset = (page - 1) * limit;
     const type = req.query.type && req.query.type !== "all" ? String(req.query.type) : null;
+    const challengeId = req.query.challengeId ? String(req.query.challengeId) : null;
     const where = ["p.deleted_at IS NULL", "COALESCE(p.visibility, 'public') = 'public'"];
     const params = { userId: req.user.id, limit, offset };
 
@@ -327,9 +662,14 @@ router.get(
       params.type = type;
     }
 
+    if (challengeId) {
+      where.push("p.related_challenge_id = :challengeId");
+      params.challengeId = challengeId;
+    }
+
     const rows = await query(
       `SELECT p.id, p.user_id, p.author_name, p.author_badge, p.author_avatar_url, p.body AS content, p.image_url,
-        p.post_type, p.achievement_label,
+        p.post_type, p.achievement_label, p.related_challenge_id,
         p.cheers_count,
         (SELECT COUNT(*) FROM community_post_comments pc WHERE pc.post_id = p.id AND pc.deleted_at IS NULL) AS comments_count,
         COALESCE(p.shares_count, 0) AS shares_count,
@@ -459,14 +799,26 @@ router.post(
     await query(
       `INSERT INTO community_challenge_members (id, challenge_id, user_id, status)
        VALUES (:id, :challengeId, :userId, 'joined')
-       ON DUPLICATE KEY UPDATE status = 'joined'`,
+       ON DUPLICATE KEY UPDATE status = 'joined', completed_at = NULL`,
       { id: randomUUID(), challengeId: req.params.id, userId: req.user.id }
     );
+    await query(
+      `INSERT INTO notifications (id, user_id, title, message, type)
+       VALUES (UUID(), :userId, 'Challenge dimulai', 'Challenge baru sudah aktif. Buka detail challenge untuk melihat task hari ini.', 'system')`,
+      { userId: req.user.id }
+    );
     const [{ joined_count: joinedCount }] = await query(
-      "SELECT COUNT(*) AS joined_count FROM community_challenge_members WHERE challenge_id = :challengeId",
+      "SELECT COUNT(*) AS joined_count FROM community_challenge_members WHERE challenge_id = :challengeId AND status IN ('joined', 'completed')",
       { challengeId: req.params.id }
     );
-    res.json({ challengeId: req.params.id, isJoined: true, participantCount: joinedCount, status: "joined", message: "Anda sudah bergabung ke challenge." });
+    res.json({
+      challengeId: req.params.id,
+      isJoined: true,
+      participantCount: joinedCount,
+      status: "joined",
+      nextUrl: `/app/community/challenges/${req.params.id}`,
+      message: "Anda sudah bergabung ke challenge."
+    });
   })
 );
 
@@ -520,7 +872,7 @@ router.post(
     );
     const [post] = await query(
       `SELECT p.id, p.user_id, p.author_name, p.author_badge, p.author_avatar_url, p.body AS content, p.image_url,
-        p.post_type, p.achievement_label, p.cheers_count, p.comments_count, p.shares_count, p.created_at,
+        p.post_type, p.achievement_label, p.related_challenge_id, p.cheers_count, p.comments_count, p.shares_count, p.created_at,
         0 AS is_cheered
        FROM community_posts p WHERE p.id = :id`,
       { id }
@@ -545,6 +897,7 @@ router.put(
         image_url = COALESCE(:imageUrl, image_url),
         post_type = COALESCE(:postType, post_type),
         achievement_label = COALESCE(:achievementLabel, achievement_label),
+        related_challenge_id = COALESCE(:relatedChallengeId, related_challenge_id),
         visibility = COALESCE(:visibility, visibility)
        WHERE id = :id AND (user_id = :userId OR user_id IS NULL)`,
       {
@@ -557,6 +910,7 @@ router.put(
         imageUrl: payload.imageUrl ?? null,
         postType: payload.postType ?? null,
         achievementLabel: payload.achievementLabel ?? null,
+        relatedChallengeId: payload.relatedChallengeId ?? null,
         visibility: payload.visibility ?? null
       }
     );

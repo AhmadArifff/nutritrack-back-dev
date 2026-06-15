@@ -87,7 +87,8 @@ const achievements = [
   ["PROTEIN_WEEK", "Protein Champion", "Capai target protein 7 hari berturut", "beef", "nutrition", 40, "protein_streak_days", 7],
   ["BALANCED_DAY", "Nutrisi Seimbang", "Semua makro dalam target dalam 1 hari", "scale", "nutrition", 30, "balanced_days", 1],
   ["FIRST_MEAL_PLAN", "Perencana Handal", "Buat meal plan pertama kali", "calendar", "milestone", 15, "total_meal_plans", 1],
-  ["TARGET_REACHED", "Target Tercapai", "Mencapai berat badan target", "medal", "milestone", 500, "target_reached", 1]
+  ["TARGET_REACHED", "Target Tercapai", "Mencapai berat badan target", "medal", "milestone", 500, "target_reached", 1],
+  ["CHALLENGE_FINISHER", "Challenge Finisher", "Selesaikan satu health challenge komunitas.", "trophy", "milestone", 100, "challenge_completed", 1]
 ];
 
 const communityChallenges = [
@@ -108,6 +109,19 @@ const communityChallenges = [
     "/assets/remote/remote-002-0eb63fe01f.jpg"
   ]
 ];
+
+const communityChallengeTasks = {
+  "Mediterranean Meal Prep": [
+    [1, "Log one balanced meal", "Catat minimal satu makanan yang mendukung challenge hari ini.", "food_log", 1, "meal", 15, 1],
+    [1, "Plan a colorful lunch", "Siapkan atau rencanakan lunch dengan protein, fiber, dan healthy fat.", "manual", 1, "check", 15, 2],
+    [2, "Share a meal prep update", "Bagikan update challenge agar buddy komunitas bisa memberi cheers.", "challenge_post", 1, "post", 20, 3]
+  ],
+  "Hydration Hero": [
+    [1, "Drink 1.5L water", "Catat asupan air minimal 1.500 ml hari ini.", "water_intake", 1500, "ml", 15, 1],
+    [1, "Hydration reflection", "Check-in singkat: energi, fokus, dan rasa lapar setelah hidrasi cukup.", "manual", 1, "check", 10, 2],
+    [2, "Share hydration win", "Posting update challenge setelah target hidrasi tercapai.", "challenge_post", 1, "post", 20, 3]
+  ]
+};
 
 const communityLeaderboard = [
   ["Elena", 31, "/assets/remote/remote-103-8125076983.jpg", true],
@@ -447,6 +461,31 @@ async function main() {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [randomUUID(), ...challenge, index + 1]
       );
+      await connection.execute(
+        `UPDATE community_challenges
+         SET reward_points = COALESCE(reward_points, 100),
+             reward_badge = COALESCE(reward_badge, CONCAT(title, ' Badge')),
+             reward_achievement_code = COALESCE(reward_achievement_code, 'CHALLENGE_FINISHER')
+         WHERE title = ?`,
+        [challenge[0]]
+      );
+      const [[challengeRow]] = await connection.execute("SELECT id FROM community_challenges WHERE title = ? LIMIT 1", [challenge[0]]);
+      const tasks = communityChallengeTasks[challenge[0]] || [];
+      for (const task of tasks) {
+        await connection.execute(
+          `INSERT INTO community_challenge_tasks
+           (id, challenge_id, day_number, title, description, task_type, target_value, target_unit, points, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE
+            description = VALUES(description),
+            task_type = VALUES(task_type),
+            target_value = VALUES(target_value),
+            target_unit = VALUES(target_unit),
+            points = VALUES(points),
+            sort_order = VALUES(sort_order)`,
+          [randomUUID(), challengeRow.id, ...task]
+        );
+      }
     }
 
     for (const [index, member] of communityLeaderboard.entries()) {
